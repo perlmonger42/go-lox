@@ -1,0 +1,4 @@
+github.com/bobappleyard/readline v0.0.0-20150707195538-7e300e02d38e h1:4G8AYOOwZdDWOiJR6D6JXaFmj5BDS7c5D5PyqsG/+Hg=
+github.com/bobappleyard/readline v0.0.0-20150707195538-7e300e02d38e/go.mod h1:fmqtV+Wqx0uFYLN1F4VhjZdtT56Dr8c3yA7nALFsw/Q=
+golang.org/x/text v0.3.7 h1:olpwvP2KacW1ZWvsR7uQhoyTYvKAupfQrRGBFM352Gk=
+golang.org/x/text v0.3.7/go.mod h1:u+2+/6zg+i71rQMx5EYifcz6MCKuco9NR6JIITiCfzQ=

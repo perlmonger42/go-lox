@@ -1,0 +1,270 @@
+package interpret
+
+import (
+	"fmt"
+	"github.com/perlmonger42/go-lox/ast"
+	"github.com/perlmonger42/go-lox/token"
+)
+
+var _ ast.Visitor_Expr_MaybeValue = &Interpreter{}
+
+func (i *Interpreter) InterpretExprMaybe(expr ast.Expr) (result Value, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if _, ok := r.(RuntimeError); ok {
+				result = nil
+			} else {
+				panic(r)
+			}
+		}
+	}()
+	i.depth = 0
+	return i.evaluateMaybe(expr)
+}
+
+func (i *Interpreter) evaluateMaybe(expr ast.Expr) (Value, error) {
+	i.depth++
+	value, err := expr.Accept_Expr_MaybeValue(i)
+	i.depth--
+
+	if i.lox.Config.TraceEval {
+		fmt.Printf("%s%s <-- %s\n", i.indent(), value, ast.ToString(expr))
+	}
+	return value, err
+}
+
+var Nil = token.NilValue{}
+
+func Numbers_Binary(op token.T, l, r token.NumberValue) (Value, error) {
+	var v Value = Nil
+	switch op.Type() {
+	case token.Plus:
+		v = token.NumberValue{l.V + r.V}
+	case token.Minus:
+		v = token.NumberValue{l.V - r.V}
+	case token.Slash:
+		v = token.NumberValue{l.V / r.V}
+	case token.Star:
+		v = token.NumberValue{l.V * r.V}
+	case token.Greater:
+		v = token.BooleanValue{l.V > r.V}
+	case token.GreaterEqual:
+		v = token.BooleanValue{l.V >= r.V}
+	case token.Less:
+		v = token.BooleanValue{l.V < r.V}
+	case token.LessEqual:
+		v = token.BooleanValue{l.V <= r.V}
+	case token.BangEqual:
+		v = token.BooleanValue{l.V != r.V}
+	case token.EqualEqual:
+		v = token.BooleanValue{l.V == r.V}
+	}
+
+	if _, ok := v.(token.NilValue); !ok {
+		return v, nil
+	}
+	return v,
+		&RuntimeError{
+			op,
+			fmt.Sprintf("cannot apply %s to types %s and %s (values %s and %s)",
+				op, l.TypeName(), r.TypeName(), l.Show(), r.Show()),
+		}
+}
+
+func Strings_Binary(op token.T, l, r token.StringValue) (Value, error) {
+	var v Value = Nil
+	switch op.Type() {
+	case token.Plus:
+		v = token.StringValue{l.V + r.V}
+	case token.Greater:
+		v = token.BooleanValue{l.V > r.V}
+	case token.GreaterEqual:
+		v = token.BooleanValue{l.V >= r.V}
+	case token.Less:
+		v = token.BooleanValue{l.V < r.V}
+	case token.LessEqual:
+		v = token.BooleanValue{l.V <= r.V}
+	case token.BangEqual:
+		v = token.BooleanValue{l.V != r.V}
+	case token.EqualEqual:
+		v = token.BooleanValue{l.V == r.V}
+	}
+
+	if _, ok := v.(token.NilValue); !ok {
+		return v, nil
+	}
+	return v,
+		&RuntimeError{
+			op,
+			fmt.Sprintf("cannot apply %s to types %s and %s (values %s and %s)",
+				op, l.TypeName(), r.TypeName(), l.Show(), r.Show()),
+		}
+}
+
+func (i *Interpreter) Visit_BinaryExpr_MaybeValue(expr *ast.Binary) (Value, error) {
+	left, err1 := i.evaluateMaybe(expr.Left)
+	if err1 != nil {
+		return left, err1
+	}
+	right, err2 := i.evaluateMaybe(expr.Right)
+	if err2 != nil {
+		return left, err2
+	}
+
+	// if both are numbers...
+	if l, ok := left.(token.NumberValue); ok {
+		if r, ok := right.(token.NumberValue); ok {
+			return Numbers_Binary(expr.Operator, l, r)
+		}
+	}
+
+	// if both are strings...
+	if l, ok := left.(token.StringValue); ok {
+		if r, ok := right.(token.StringValue); ok {
+			return Strings_Binary(expr.Operator, l, r)
+		}
+	}
+
+	switch expr.Operator.Type() {
+	case token.Plus:
+		switch l := left.(type) {
+		case token.StringValue:
+			switch right.(type) {
+			case token.NilValue:
+				return token.StringValue{l.V + "{[(<nil>)]}"}, nil
+			}
+		}
+	case token.BangEqual:
+		return token.BooleanValue{V: !left.IsEqualTo(right)}, nil
+	case token.EqualEqual:
+		return token.BooleanValue{V: left.IsEqualTo(right)}, nil
+	}
+
+	return Nil,
+		&RuntimeError{
+			expr.Operator,
+			fmt.Sprintf("cannot apply %s to types %s and %s (values %s and %s)",
+				expr.Operator, left.TypeName(), right.TypeName(),
+				left.Show(), right.Show()),
+		}
+}
+
+func (i *Interpreter) Visit_GroupingExpr_MaybeValue(expr *ast.Grouping) (Value, error) {
+	return i.evaluateMaybe(expr.Expression)
+}
+
+func (i *Interpreter) Visit_LiteralExpr_MaybeValue(expr *ast.Literal) (Value, error) {
+	return expr.Value, nil
+}
+
+func (i *Interpreter) Visit_VariableExpr_MaybeValue(expr *ast.Variable) (Value, error) {
+	return i.lookUpVariable(expr.Name, expr), nil
+}
+
+func (i *Interpreter) Visit_ThisExpr_MaybeValue(expr *ast.This) (Value, error) {
+	return i.lookUpVariable(expr.Keyword, expr), nil
+}
+
+func (i *Interpreter) Visit_CallExpr_MaybeValue(expr *ast.Call) (Value, error) {
+	callee, err := i.evaluateMaybe(expr.Callee)
+	if err != nil {
+		return Nil, err
+	}
+	arguments := []token.Value{}
+	for _, argument := range expr.Arguments {
+		if value, err := i.evaluateMaybe(argument); err != nil {
+			return Nil, err
+		} else {
+			arguments = append(arguments, value)
+		}
+	}
+	if function, ok := callee.(Callable); ok {
+		return function.Call(i, arguments), nil
+	}
+	return Nil,
+		&RuntimeError{expr.Paren, "Can only call functions and classes."}
+}
+
+func (i *Interpreter) Visit_GetExpr_MaybeValue(expr *ast.Get) (Value, error) {
+	if lhs, err := i.evaluateMaybe(expr.Object); err != nil {
+		return Nil, err
+	} else if obj, ok := lhs.(token.ObjectValue); ok {
+		if instance, ok := obj.V.(*LoxInstance); ok {
+			return instance.Get(expr.Name)
+		}
+	}
+	return Nil,
+		&RuntimeError{expr.Name, "Only instances have properties."}
+}
+
+func (i *Interpreter) Visit_SetExpr_MaybeValue(expr *ast.Set) (Value, error) {
+	if lhs, err := i.evaluateMaybe(expr.Object); err != nil {
+		return Nil, err
+	} else if obj, ok := lhs.(token.ObjectValue); ok {
+		if instance, ok := obj.V.(*LoxInstance); ok {
+			if rhs, err := i.evaluateMaybe(expr.Value); err != nil {
+				return Nil, err
+			} else {
+				instance.Set(expr.Name, rhs)
+				return rhs, nil
+			}
+		}
+	}
+	return Nil,
+		&RuntimeError{expr.Name, "Only instances have fields."}
+}
+
+func (i *Interpreter) Visit_UnaryExpr_MaybeValue(expr *ast.Unary) (Value, error) {
+	var right, err = i.evaluateMaybe(expr.Right)
+	if err != nil {
+		return right, err
+	}
+	switch expr.Operator.Type() {
+	case token.Minus:
+		switch r := right.(type) {
+		case token.NumberValue:
+			return token.NumberValue{-r.V}, nil
+		}
+	case token.Bang:
+		switch r := right.(type) {
+		case token.BooleanValue:
+			return token.BooleanValue{!r.V}, nil
+		case token.NilValue:
+			return token.BooleanValue{true}, nil
+		}
+	}
+
+	return Nil,
+		&RuntimeError{
+			expr.Operator,
+			fmt.Sprintf("cannot apply %s to type %s (%v)",
+				expr.Operator, right.TypeName(), right.Show()),
+		}
+}
+
+func (i *Interpreter) Visit_AssignExpr_MaybeValue(expr *ast.Assign) (Value, error) {
+	value, err := i.evaluateMaybe(expr.Value)
+	if err != nil {
+		return value, err
+	}
+	return value, i.environment.Assign(expr.Name, value)
+}
+
+func (i *Interpreter) Visit_LogicalExpr_MaybeValue(expr *ast.Logical) (Value, error) {
+	left, err := i.evaluateMaybe(expr.Left)
+	if err != nil {
+		return left, err
+	}
+
+	if expr.Operator.Type() == token.Or {
+		if isTruthy(left) {
+			return left, nil
+		}
+	} else {
+		if !isTruthy(left) {
+			return left, nil
+		}
+	}
+
+	return i.evaluateMaybe(expr.Right)
+}

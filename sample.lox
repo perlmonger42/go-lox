@@ -1,0 +1,10 @@
+var a = 1;
+print a;
+var a = 2; // redefining variables is allowed in the global scope
+print a;
+{
+  var a = 3;
+  print a;
+  var a = 4; // but not in nested scopes
+  print a;
+}

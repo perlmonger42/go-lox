@@ -1,0 +1,149 @@
+package interpret
+
+import (
+	"fmt"
+
+	"github.com/perlmonger42/go-lox/ast"
+	"github.com/perlmonger42/go-lox/token"
+)
+
+var _ T = &Interpreter{}
+var _ ast.Visitor_Stmt = &Interpreter{}
+
+func (i *Interpreter) InterpretStmts2(statements []ast.Stmt) error {
+	defer func() {
+		if r := recover(); r != nil {
+			if exception, ok := r.(RuntimeError); ok {
+				fmt.Printf("runtime error: %s\n", exception)
+			} else {
+				fmt.Printf("something went wrong: %s\n", r)
+				panic(r)
+			}
+		}
+	}()
+	i.depth = 0
+
+	for _, statement := range statements {
+		fmt.Printf("InterpretStmts2 executing: %s\n", ast.StmtToString(statement))
+		if err := i.execute2(statement); err != nil {
+			fmt.Printf("InterpretStmts2 error: %p %s\n", err, err)
+			if rte := err.(*RuntimeError); rte != nil {
+				i.Error(rte.Token, rte.Message)
+				return rte
+			} else {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (i *Interpreter) execute2(stmt ast.Stmt) error {
+	return stmt.Accept_Stmt_Error(i)
+}
+
+func (i *Interpreter) executeBlock2(statements []ast.Stmt, newEnv Environment) error {
+	var previous Environment = i.environment
+	i.environment = newEnv
+	defer func() { i.environment = previous }()
+
+	for _, statement := range statements {
+		if err := i.execute2(statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (i *Interpreter) Visit_NoopStmt_Error(stmt *ast.Noop) error {
+	return nil
+}
+
+func (i *Interpreter) Visit_ExpressionStmt_Error(stmt *ast.Expression) error {
+	_, err := i.evaluateMaybe(stmt.Expression)
+	return err
+}
+
+func (i *Interpreter) Visit_PrintStmt_Error(stmt *ast.Print) error {
+	value, err := i.evaluateMaybe(stmt.Expression)
+	if err != nil {
+		return nil
+	}
+	fmt.Printf("%s\n", value.String())
+	return nil
+}
+
+func (i *Interpreter) Visit_ReturnStmt_Error(stmt *ast.Return) error {
+	var value Value
+	if stmt.Value != nil {
+		value = i.evaluate(stmt.Value)
+	}
+	return &PanicForReturn{Token: stmt.Keyword, Result: value}
+}
+
+func (i *Interpreter) Visit_PanicStmt_Error(stmt *ast.Panic) error {
+	if value, err := i.evaluateMaybe(stmt.Expression); err != nil {
+		return err
+	} else {
+		fmt.Printf("program called panic: %s\n", value.String())
+		return &RuntimeError{stmt.Keyword, value.String()}
+	}
+}
+
+func (i *Interpreter) Visit_BlockStmt_Error(stmt *ast.Block) error {
+	env := NewNestedEnvironment(i.environment)
+	return i.executeBlock2(stmt.Statements, env)
+}
+
+func (i *Interpreter) Visit_VarInitializedStmt_Error(stmt *ast.VarInitialized) error {
+	if value, err := i.evaluateMaybe(stmt.Initializer); err != nil {
+		fmt.Printf("Var: value error %s\n", err)
+		return err
+	} else {
+		err = i.environment.Define(stmt.Name, value)
+		fmt.Printf("Var: assign error %s\n", err)
+		return err
+	}
+}
+
+func (i *Interpreter) Visit_VarUninitializedStmt_Error(stmt *ast.VarUninitialized) error {
+	return i.environment.Define(stmt.Name, &token.NilValue{})
+}
+
+func (i *Interpreter) Visit_ClassStmt_Error(stmt *ast.Class) error {
+	panic("(i *interpret.Interpreter) Visit_ClassStmt_Error: not yet implemented")
+	return nil
+}
+
+func (i *Interpreter) Visit_FunctionStmt_Error(stmt *ast.Function) error {
+	var function *LoxFunction = NewLoxFunction(
+		stmt, i.GetCurrentEnvironment(), false,
+	)
+	err := i.environment.Define(stmt.Name, token.ObjectValue{function})
+	fmt.Printf("fun: assign error %s\n", err)
+	return err
+}
+
+func (i *Interpreter) Visit_IfStmt_Error(stmt *ast.If) error {
+	if value, err := i.evaluateMaybe(stmt.Condition); err != nil {
+		return err
+	} else if isTruthy(value) {
+		return i.execute2(stmt.ThenBranch)
+	} else if stmt.ElseBranch != nil {
+		return i.execute2(stmt.ElseBranch)
+	}
+	return nil
+}
+
+func (i *Interpreter) Visit_WhileStmt_Error(stmt *ast.While) error {
+	for {
+		if value, err := i.evaluateMaybe(stmt.Condition); err != nil {
+			return err
+		} else if !isTruthy(value) {
+			break
+		} else if err := i.execute2(stmt.Body); err != nil {
+			return err
+		}
+	}
+	return nil
+}
